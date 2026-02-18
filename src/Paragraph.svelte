@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
   import { onMount } from "svelte";
   import { lineBreak } from "./line_breaking";
   import fr from "./fr.json";
@@ -9,27 +9,28 @@ j'avais fait des vers à la louange du roi, j'ai été sur le point d'être étr
 parce que la reine avait des rubans jaunes, et me voici esclave avec toi parce
 qu'un brutal a battu sa maîtresse.`;
 
-  let canvasElement;
-  let context;
+  let canvasElement: HTMLCanvasElement;
+  let context: CanvasRenderingContext2D;
   let lineWidth = 350;
   let step = 30;
 
   onMount(() => {
-    context = canvasElement.getContext("2d");
+    context = canvasElement.getContext("2d")!;
     context.font = "20px Arial";
 
-    const interval = setInterval(() => {
-      lineWidth += step;
-      if (lineWidth < 350 || lineWidth > 900) {
-        step = -step;
-      }
-      textChanged();
-    }, 1000);
+    // const interval = setInterval(() => {
+    //   lineWidth += step;
+    //   if (lineWidth < 350 || lineWidth > 900) {
+    //     step = -step;
+    //   }
+    //   textChanged();
+    // }, 1000);
+    textChanged();
 
-    return () => clearInterval(interval);
+    // return () => clearInterval(interval);
   });
 
-  function computeWidth(word) {
+  function computeWidth(word: string) {
     return context.measureText(word).width;
   }
 
