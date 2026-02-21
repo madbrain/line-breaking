@@ -1,7 +1,8 @@
-<script>
+<script lang="ts">
   import { onMount } from "svelte";
-  import { lineBreak } from "./line_breaking";
+  import { lineBreak, type Box, Glue } from "./line_breaking";
   import fr from "./fr.json";
+  import type { HyphenateTreeNode } from "./hyphenate";
 
   let content = `J'ai été condamné à l'amende pour avoir vu passer une chienne,
 j'ai pensé être empalé pour un griffon, j'ai été envoyé au supplice parce que
@@ -9,13 +10,13 @@ j'avais fait des vers à la louange du roi, j'ai été sur le point d'être étr
 parce que la reine avait des rubans jaunes, et me voici esclave avec toi parce
 qu'un brutal a battu sa maîtresse.`;
 
-  let canvasElement;
-  let context;
+  let canvasElement: HTMLCanvasElement;
+  let context: CanvasRenderingContext2D;
   let lineWidth = 350;
   let step = 30;
 
   onMount(() => {
-    context = canvasElement.getContext("2d");
+    context = canvasElement.getContext("2d")!;
     context.font = "20px Arial";
 
     const interval = setInterval(() => {
@@ -25,26 +26,34 @@ qu'un brutal a battu sa maîtresse.`;
       }
       textChanged();
     }, 1000);
+    textChanged();
 
     return () => clearInterval(interval);
   });
 
-  function computeWidth(word) {
+  function computeWidth(word: string) {
     return context.measureText(word).width;
   }
 
   function textChanged() {
-    const result = lineBreak(fr, content, computeWidth, lineWidth);
+    const result = lineBreak(
+      fr as any as HyphenateTreeNode,
+      content,
+      computeWidth,
+      lineWidth,
+    );
     let x = 0;
     let y = 20;
     context.clearRect(0, 0, 1000, 500);
     result.forEach((line) => {
       line.forEach((e) => {
         if (e.type === "box") {
-          context.fillText(e.content, x, y);
-          x += e.width;
+          const box = e as Box;
+          context.fillText(box.content, x, y);
+          x += box.width;
         } else if (e.type === "glue") {
-          x += e.width;
+          const glue = e as Glue;
+          x += glue.width;
         } else {
           context.beginPath();
           context.moveTo(x, y);
