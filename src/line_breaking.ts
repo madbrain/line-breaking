@@ -41,7 +41,10 @@ export class Glue implements ParagraphElement, BreakableElement {
   }
 }
 
-const INTERWORD_GLUE = (v: number) => new Glue(v, v / 2, v / 3);
+function makeInterWordGlue(v: number) {
+  return new Glue(v, v / 2, v / 3);
+}
+
 const FINISHING_GLUE = new Glue(0, INFINITE_STRETCH, 0);
 
 const MANDATORY_BREAK = -1000;
@@ -66,19 +69,28 @@ export class Penalty implements ParagraphElement, BreakableElement {
   isFlagged() {
     return this.flagged;
   }
+
+  isProhibitedBreak() {
+    return this.value == PROHIBITED_BREAK;
+  }
 }
 
 const FORCE_BREAK = new Penalty(0, MANDATORY_BREAK, true);
+
 const HYPHEN_PENALTY = 50;
 
-enum FitnessClass {
+function makeHyphenPenalty(width: number) {
+  return new Penalty(width, HYPHEN_PENALTY, true);
+}
+
+export enum FitnessClass {
   TIGHT_LINE,
   NORMAL_LINE,
   LOOSE_LINE,
   VERY_LOOSE_LINE,
 }
 
-function getFitnessClass(r: number): FitnessClass {
+export function getFitnessClass(r: number): FitnessClass {
   if (r < -0.5) {
     return FitnessClass.TIGHT_LINE;
   }
@@ -91,11 +103,14 @@ function getFitnessClass(r: number): FitnessClass {
   return FitnessClass.VERY_LOOSE_LINE;
 }
 
-class Node {
+let nodeId = 0;
+
+export class Node {
+  id = nodeId++;
   flagged = false; // TODO store flagged when creating new nodes
 
   constructor(
-    public position = 0,
+    public endPosition = 0,
     public line = 0,
     public fitness = FitnessClass.NORMAL_LINE,
     public totalWidth = 0,
@@ -107,12 +122,43 @@ class Node {
   ) {}
 }
 
+export type LineElement =
+  | {
+      type: "box";
+      content: string;
+      width: number;
+    }
+  | {
+      type: "glue";
+      width: number;
+    };
+
+export class Line {
+  constructor(
+    public elements: LineElement[],
+    public ratio: number,
+    public fitness: FitnessClass,
+    public node: Node,
+  ) {}
+}
+
+interface LineQuality {
+  demerits: number;
+  fitnessClass: FitnessClass;
+}
+
+interface LineStats {
+  demerits: number;
+  node: Node;
+  ratio: number;
+}
+
 const INFINITE_RATIO = 10000;
 const MAXIMUM_SHRINK_RATIO = -1;
 const CONSECUTIVE_FLAGGED_PENALTY = 3000;
 const CONSECUTIVE_CLASS_PENALTY = 3000;
 
-class Context {
+export class ParagraphLayout {
   activeNodes: Array<Node> = [new Node()];
   widthSum = 0;
   stretchSum = 0;
@@ -126,26 +172,33 @@ class Context {
     private lineWidthValue: number,
   ) {}
 
-  process() {
-    this.elements.forEach((e, b) => {
-      if (e.type === "box") {
-        this.widthSum += (<Box>e).width;
-      } else if (e.type === "glue") {
-        if (this.elements[b - 1].type == "box") {
-          this.processFeasible(<BreakableElement>(<any>e), b);
-        }
-        const glue = <Glue>e;
-        this.widthSum += glue.width;
-        this.stretchSum += glue.stretchability;
-        this.shrinkSum += glue.shrinkability;
-      } /* if e.type === "penalty" */ else {
-        const penalty = <Penalty>e;
-        if (penalty.value != PROHIBITED_BREAK) {
-          this.processFeasible(<BreakableElement>(<any>e), b);
-        }
-      }
+  process(): Line[] {
+    this.elements.forEach((e, index) => {
+      this.processOne(e, index);
     });
+    return this.finish();
+  }
 
+  processOne(element: ParagraphElement, index: number) {
+    if (element.type === "box") {
+      this.widthSum += (element as Box).width;
+    } else if (element.type === "glue") {
+      if (this.elements[index - 1].type == "box") {
+        this.processFeasibleBreak(element as any as BreakableElement, index);
+      }
+      const glue = element as Glue;
+      this.widthSum += glue.width;
+      this.stretchSum += glue.stretchability;
+      this.shrinkSum += glue.shrinkability;
+    } /* if e.type === "penalty" */ else {
+      const penalty = element as Penalty;
+      if (!penalty.isProhibitedBreak()) {
+        this.processFeasibleBreak(element as any as BreakableElement, index);
+      }
+    }
+  }
+
+  public finish(): Line[] {
     let bestNode: Node | null = null;
     let currentDemerits = 0;
     this.activeNodes.forEach((node) => {
@@ -155,95 +208,123 @@ class Context {
       }
     });
     if (!bestNode) {
-      throw Error("no solution");
+      throw Error(`no solution! ${this.lineWidthValue}`);
     }
-    const lineBreaks: Array<Node> = [];
+    const nodes: Array<Node> = [];
     while (bestNode && (bestNode as Node).line > 0) {
       let p = bestNode as Node;
       if (p.line > 0) {
-        lineBreaks.unshift(p);
+        nodes.unshift(p);
         bestNode = p.previous;
       }
     }
 
     // =============================================
 
-    const lines = [];
-    let elementIndex = 0;
-    for (let lineIndex = 0; lineIndex < lineBreaks.length; ++lineIndex) {
-      let currentLine: Array<ParagraphElement> = [];
-      lines.push(currentLine);
-      const lineBreak = lineBreaks[lineIndex];
-      for (; elementIndex < lineBreak.position; ++elementIndex) {
-        const e = this.elements[elementIndex];
-        if (e.type === "box") {
-          currentLine.push(e);
-        } else if (e.type === "glue") {
-          const glue = e as Glue;
-          let w = glue.width;
-          if (lineBreak.ratio < 0) {
-            w += lineBreak.ratio * glue.shrinkability;
-          } else {
-            w += lineBreak.ratio * glue.stretchability;
-          }
-          currentLine.push({ type: "glue", width: w } as Glue);
-        } /* if e.type === "penalty" */ else {
-          // currentLine.push({type: "penalty"});
-        }
-      }
-      if (
-        lineBreak.position < this.elements.length &&
-        this.elements[lineBreak.position].type === "penalty"
-      ) {
-        const penalty = this.elements[lineBreak.position] as Penalty;
-        if (penalty.width > 0) {
-          currentLine.push({
-            type: "box",
-            width: penalty.width,
-            content: "-",
-          } as Box);
-        }
-      }
-
-      // Same effect as compute after
-      while (
-        elementIndex < this.elements.length &&
-        (this.elements[elementIndex].type === "glue" ||
-          this.elements[elementIndex].type === "penalty")
-      ) {
-        ++elementIndex;
-      }
+    const lines: Line[] = [];
+    for (let nodeIndex = 0; nodeIndex < nodes.length; ++nodeIndex) {
+      const node = nodes[nodeIndex];
+      lines.push(this.createLine(node));
     }
-
     return lines;
   }
 
-  private processFeasible(e: BreakableElement, b: number) {
-    const demeritsByClass = new Map();
-    this.activeNodes.slice().forEach((a) => {
-      const r = this.computeAdjustmentRatio(a, e);
-      if (r < MAXIMUM_SHRINK_RATIO || e.penalty() == MANDATORY_BREAK) {
-        this.deactivate(a);
+  createLine(node: Node): Line {
+    let lineElements: LineElement[] = [];
+    let elementIndex = node.previous ? node.previous.endPosition : 0;
+
+    // Same effect as compute after -> skip previous end of line elements
+    while (
+      elementIndex < this.elements.length &&
+      (this.elements[elementIndex].type === "glue" ||
+        this.elements[elementIndex].type === "penalty")
+    ) {
+      ++elementIndex;
+    }
+
+    for (; elementIndex < node.endPosition; ++elementIndex) {
+      const e = this.elements[elementIndex];
+      if (e.type === "box") {
+        const box = e as Box;
+        lineElements.push({
+          type: "box",
+          content: box.content,
+          width: box.width,
+        });
+      } else if (e.type === "glue") {
+        const glue = e as Glue;
+        let w = glue.width;
+        if (node.ratio < 0) {
+          w += Math.max(-1, node.ratio) * glue.shrinkability;
+        } else {
+          w += node.ratio * glue.stretchability;
+        }
+        lineElements.push({ type: "glue", width: w });
       }
-      if (MAXIMUM_SHRINK_RATIO <= r && r < this.maxRatio) {
-        const result = this.computeDemeritsAndFitnessClass(a, e, r);
-        this.updateDemeritsByClass(demeritsByClass, result, a);
+    }
+    if (
+      node.endPosition < this.elements.length &&
+      this.elements[node.endPosition].type === "penalty"
+    ) {
+      const penalty = this.elements[node.endPosition] as Penalty;
+      if (penalty.width > 0) {
+        lineElements.push({
+          type: "box",
+          width: penalty.width,
+          content: "-",
+        });
       }
-    });
-    this.insertNewActiveNodes(demeritsByClass, b);
-    // TODO fail if activeNodes.length == 0
+    }
+    return {
+      elements: lineElements,
+      ratio: node.ratio,
+      fitness: node.fitness,
+      node: node,
+    };
   }
 
-  private insertNewActiveNodes(demeritsByClass: Map<number, any>, b: number) {
+  private processFeasibleBreak(element: BreakableElement, index: number) {
+    const demeritsByClass = new Map<FitnessClass, LineStats>();
+    this.activeNodes.slice().forEach((node) => {
+      const ratio = this.computeAdjustmentRatio(node, element);
+      if (
+        ratio < MAXIMUM_SHRINK_RATIO ||
+        element.penalty() == MANDATORY_BREAK
+      ) {
+        if (this.activeNodes.length == 1) {
+          const result = this.computeDemeritsAndFitnessClass(
+            node,
+            element,
+            ratio,
+          );
+          this.updateDemeritsByClass(demeritsByClass, result, node, ratio);
+        }
+        this.deactivate(node);
+      }
+      if (MAXIMUM_SHRINK_RATIO <= ratio && ratio < this.maxRatio) {
+        const result = this.computeDemeritsAndFitnessClass(
+          node,
+          element,
+          ratio,
+        );
+        this.updateDemeritsByClass(demeritsByClass, result, node, ratio);
+      }
+    });
+    this.insertNewActiveNodes(demeritsByClass, index);
+  }
+
+  private insertNewActiveNodes(
+    demeritsByClass: Map<FitnessClass, LineStats>,
+    index: number,
+  ) {
     if (demeritsByClass.size > 0) {
-      demeritsByClass.forEach((value, c) => {
-        const { demerits, node, ratio } = value;
+      demeritsByClass.forEach(({ demerits, node, ratio }, fitness) => {
         // TODO test demerits < min(demerits) + gamma
-        const { tw, ty, tz } = this.computeAfter(b);
+        const { tw, ty, tz } = this.computeAfter(index);
         const newNode = new Node(
-          b,
+          index,
           node.line + 1,
-          c as FitnessClass,
+          fitness,
           tw,
           ty,
           tz,
@@ -260,18 +341,18 @@ class Context {
     this.activeNodes = this.activeNodes.filter((a) => a != node);
   }
 
-  private computeAdjustmentRatio(a: Node, e: BreakableElement) {
-    let L = this.widthSum - a.totalWidth + e.penaltyWidth();
-    const lineWidth = this.lineWidth(a.line + 1);
+  computeAdjustmentRatio(node: Node, element: BreakableElement) {
+    let L = this.widthSum - node.totalWidth + element.penaltyWidth();
+    const lineWidth = this.lineWidth(node.line + 1);
     if (L < lineWidth) {
-      const Y = this.stretchSum - a.totalStretch;
+      const Y = this.stretchSum - node.totalStretch;
       if (Y > 0) {
         return (lineWidth - L) / Y;
       } else {
         return INFINITE_RATIO;
       }
     } else if (L > lineWidth) {
-      const Z = this.shrinkSum - a.totalShrink;
+      const Z = this.shrinkSum - node.totalShrink;
       if (Z > 0) {
         return (lineWidth - L) / Z;
       } else {
@@ -283,55 +364,57 @@ class Context {
   }
 
   private computeDemeritsAndFitnessClass(
-    a: Node,
-    e: BreakableElement,
-    r: number,
-  ) {
+    node: Node,
+    element: BreakableElement,
+    ratio: number,
+  ): LineQuality {
     let d = 0;
-    if (e.penalty() >= 0) {
-      d = Math.pow(1 + 100 * Math.pow(Math.abs(r), 3) + e.penalty(), 2);
-    } else if (e.penalty() != MANDATORY_BREAK) {
+    if (element.penalty() >= 0) {
+      d = Math.pow(
+        1 + 100 * Math.pow(Math.abs(ratio), 3) + element.penalty(),
+        2,
+      );
+    } else if (element.penalty() != MANDATORY_BREAK) {
       d =
-        Math.pow(1 + 100 * Math.pow(Math.abs(r), 3), 2) -
-        Math.pow(e.penalty(), 2);
+        Math.pow(1 + 100 * Math.pow(Math.abs(ratio), 3), 2) -
+        Math.pow(element.penalty(), 2);
     } else {
-      d = Math.pow(1 + 100 * Math.pow(Math.abs(r), 3), 2);
+      d = Math.pow(1 + 100 * Math.pow(Math.abs(ratio), 3), 2);
     }
-    if (a.flagged && e.isFlagged()) {
+    if (node.flagged && element.isFlagged()) {
       d += CONSECUTIVE_FLAGGED_PENALTY;
     }
-    const c = getFitnessClass(r);
-    if (Math.abs(a.fitness - c) > 1) {
+    const c = getFitnessClass(ratio);
+    if (Math.abs(node.fitness - c) > 1) {
       d += CONSECUTIVE_CLASS_PENALTY;
     }
-    d += a.totalDemerits;
-    return { demerits: d, fitnessClass: c, ratio: r };
+    d += node.totalDemerits;
+    return { demerits: d, fitnessClass: c };
   }
 
   private updateDemeritsByClass(
-    demeritsByClass: Map<FitnessClass, any>,
-    result: any,
+    demeritsByClass: Map<FitnessClass, LineStats>,
+    lineQuality: LineQuality,
     node: Node,
+    ratio: number,
   ) {
-    if (
-      demeritsByClass.get(result.fitnessClass) === undefined ||
-      result.demerits < demeritsByClass.get(result.fitnessClass).demerits
-    ) {
-      demeritsByClass.set(result.fitnessClass, {
-        demerits: result.demerits,
+    const stats = demeritsByClass.get(lineQuality.fitnessClass);
+    if (stats === undefined || lineQuality.demerits < stats.demerits) {
+      demeritsByClass.set(lineQuality.fitnessClass, {
+        demerits: lineQuality.demerits,
         node: node,
-        ratio: result.ratio,
+        ratio: ratio,
       });
       // TODO compute global minimum
     }
   }
 
   /* absorb potential glue and non mandatory penalty after the break */
-  private computeAfter(b: number) {
+  private computeAfter(index: number) {
     let tw = this.widthSum;
     let ty = this.stretchSum;
     let tz = this.shrinkSum;
-    for (let i = b; i < this.elements.length; ++i) {
+    for (let i = index; i < this.elements.length; ++i) {
       const e = this.elements[i];
       if (e.type === "box") {
         break;
@@ -342,7 +425,7 @@ class Context {
         tz += glue.shrinkability;
       } else {
         const penalty = <Penalty>e;
-        if (penalty.value === MANDATORY_BREAK && i > b) {
+        if (penalty.value === MANDATORY_BREAK && i > index) {
           break;
         }
       }
@@ -355,57 +438,80 @@ class Context {
   }
 }
 
-function hyphenateWord(
-  langTree: HyphenateTreeNode,
+export type WordProcessor = (word: string) => ParagraphElement[];
+
+export type Hyphenator = (word: string) => string[];
+
+export function makeHyphenator(langTree: HyphenateTreeNode): Hyphenator {
+  return (word: string) => hyphenate(langTree, word);
+}
+
+export function hyphenateWord(
+  hyphenator: Hyphenator,
   word: string,
   computeWidth: (word: string) => number,
+  hyphenPenalty: Penalty,
 ) {
   const result: ParagraphElement[] = [];
-  const wordAndPunct = word.match(/([^.,;:]+)(.*)/);
-  if (wordAndPunct) {
-    const hyphenation = hyphenate(langTree, wordAndPunct[1]);
-    const hyphenPenalty = new Penalty(computeWidth("-"), HYPHEN_PENALTY, true);
+  const wordAndPunctuations = word.match(/([^.,;:]+)(.*)/);
+  if (wordAndPunctuations) {
+    const hyphenation = hyphenator(wordAndPunctuations[1]);
     hyphenation.forEach((w, i) => {
       if (i != hyphenation.length - 1) {
         const width = computeWidth(w);
         result.push(new Box(w, width));
         result.push(hyphenPenalty);
       } else {
-        const part = w + wordAndPunct[2];
+        const part = w + wordAndPunctuations[2];
         const width = computeWidth(part);
         result.push(new Box(part, width));
       }
     });
+  } else {
+    throw Error(`bad punctuation regexp '${word}'`);
   }
   return result;
 }
 
-function createElements(
+export function makeHyphenatorProcessor(
   langTree: HyphenateTreeNode,
-  content: string,
   computeWidth: (word: string) => number,
+): WordProcessor {
+  const hyphenator = makeHyphenator(langTree);
+  const hyphenPenalty = makeHyphenPenalty(computeWidth("-"));
+  return (word: string) => {
+    return hyphenateWord(hyphenator, word, computeWidth, hyphenPenalty);
+  };
+}
+
+export function createParagraphElements(
+  wordProcessor: WordProcessor,
+  computeWidth: (word: string) => number,
+  content: string,
 ) {
-  const result = content.split(/[ \n]+/);
-  const elements = [];
-  const interwordSpace = INTERWORD_GLUE(computeWidth(" "));
-  result.forEach((word) => {
-    const parts = hyphenateWord(langTree, word, computeWidth);
-    elements.push(...parts);
-    elements.push(interwordSpace);
+  const interWordGlue = makeInterWordGlue(computeWidth(" "));
+  const words = content.split(/\s+/);
+  const elements = words.flatMap((word, i) => {
+    const step = [];
+    if (i > 0) {
+      step.push(interWordGlue);
+    }
+    const parts = wordProcessor(word);
+    step.push(...parts);
+    return step;
   });
-  elements.push(FINISHING_GLUE, FORCE_BREAK);
-  return elements;
+  return [...elements, FINISHING_GLUE, FORCE_BREAK];
 }
 
 export function lineBreak(
-  langTree: HyphenateTreeNode,
+  wordProcessor: WordProcessor,
   content: string,
   computeWidth: (word: string) => number,
   lineWidth: number,
 ) {
-  const context = new Context(
-    createElements(langTree, content, computeWidth),
+  const layout = new ParagraphLayout(
+    createParagraphElements(wordProcessor, computeWidth, content),
     lineWidth,
   );
-  return context.process();
+  return layout.process();
 }
