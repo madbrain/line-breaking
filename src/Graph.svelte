@@ -2,7 +2,7 @@
   import dagre from "@dagrejs/dagre";
   import { onMount } from "svelte";
 
-  export let width = 1000;
+  export let width = 500;
   export let height = 800;
 
   export let graph: dagre.graphlib.Graph;
