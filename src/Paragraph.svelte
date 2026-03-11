@@ -27,8 +27,8 @@ qu'un brutal a battu sa maîtresse.`;
   let paragraphCanvasElement: HTMLCanvasElement;
   let context: CanvasRenderingContext2D;
 
-  let lineWidth = 340;
-  let maxRatio = 4;
+  let lineWidth = 360;
+  let maxRatio = 2;
   let doHyphenate = true;
 
   let step = -30;
@@ -78,8 +78,25 @@ qu'un brutal a battu sa maîtresse.`;
     layout.maxRatio = maxRatio;
     index = 0;
 
+    nodeId = 0;
+    mergedNodes.clear();
+
     // renderParagraph(layout.process());
     // graph = makeGraph();
+  }
+
+  function restart() {
+    textChanged();
+    renderParagraph([]);
+  }
+
+  function terminate() {
+    while (index < elements.length) {
+      layout.processOne(elements[index], index);
+      index += 1;
+      graph = makeGraph();
+    }
+    renderParagraph(layout.finish());
   }
 
   function createTempNode(node: Node, element: ParagraphElement): Node {
@@ -159,9 +176,9 @@ qu'un brutal a battu sa maîtresse.`;
       }
     });
     context.font = "10px Courier";
-    context.fillStyle = "black";
+    context.fillStyle = acceptable(line.ratio) ? "green" : "black";
     context.fillText(
-      `${line.ratio.toFixed(2)} ${fitness(line.ratio)} -> ${line.node.previous?.id}`,
+      `${line.ratio.toFixed(2)} ${fitness(line.ratio)}`,
       lineWidth + 10,
       y - 5,
     );
@@ -174,6 +191,10 @@ qu'un brutal a battu sa maîtresse.`;
     if (f < 1) return "LOOSE";
     if (f < layout.maxRatio) return "VERY LOOSE";
     return "TOO LOOSE";
+  }
+
+  function acceptable(f: number): boolean {
+    return f >= -1 && f < layout.maxRatio;
   }
 
   let nodeId = 0;
@@ -203,17 +224,26 @@ qu'un brutal a battu sa maîtresse.`;
     text() {
       let index = this.nodes[0].endPosition - 1;
       let result = "";
+      let isFirst = true;
       while (index >= 0) {
         const e = elements[index];
         if (e.type === "box") {
           const box = e as Box;
+          if (
+            isFirst &&
+            index + 1 < elements.length &&
+            elements[index + 1].type === "penalty"
+          ) {
+            result = "-";
+          }
           result = box.content + result;
         } else if (e.type === "penalty") {
-          result = "-";
+          // ignore
         } else {
           break;
         }
         index -= 1;
+        isFirst = false;
       }
       return result;
     }
@@ -276,6 +306,7 @@ qu'un brutal a battu sa maîtresse.`;
 <h1>Line Breaking</h1>
 
 <div>
+  <p>Starting from a raw text</p>
   <textarea
     rows="6"
     class="form-control"
@@ -283,6 +314,21 @@ qu'un brutal a battu sa maîtresse.`;
     onkeyup={textChanged}
   ></textarea>
 
+  <p>First step is to split it into chunks:</p>
+  <ul>
+    <li>Box of fixed width usually containing text,</li>
+    <li>Glue, a space that can shrink or expand a definite amount,</li>
+    <li>
+      Penalty is a possible place where the line can be broken, but at a certain
+      cost.
+    </li>
+  </ul>
+
+  <p>
+    In order to give more flexibility in the way lines are broken, words can be
+    split into smaller pieces called hyphenation, theses pieces are separated by
+    penalties.
+  </p>
   <div class="buttons">
     <input type="checkbox" bind:checked={doHyphenate} />&nbsp;Hyphenate
   </div>
@@ -292,19 +338,22 @@ qu'un brutal a battu sa maîtresse.`;
       {#if element.type === "box"}
         <span
           class="box {i == index ? 'select' : ''}"
-          title="width: {(element as Box).width}"
+          title="width {(element as Box).width.toFixed(2)}"
           >{(element as Box).content}</span
         >
       {:else if element.type === "glue"}
         <span
           class="glue {i == index ? 'select' : ''}"
-          title="width: {(element as Glue).width}, +: {(element as Glue)
-            .stretchability}, -: {(element as Glue).shrinkability}">&nbsp</span
+          title="width {(element as Glue).width.toFixed(2)}, +{(
+            element as Glue
+          ).stretchability.toFixed(2)}, -{(
+            element as Glue
+          ).shrinkability.toFixed(2)}">&nbsp</span
         >
       {:else if element.type === "penalty"}
         <span
           class="penalty {i == index ? 'select' : ''}"
-          title="width: {(element as Penalty).width}, value: {(
+          title="width {(element as Penalty).width.toFixed(2)}, value {(
             element as Penalty
           ).value}">&nbsp</span
         >
@@ -312,22 +361,48 @@ qu'un brutal a battu sa maîtresse.`;
     {/each}
   </div>
 
+  <p>
+    Then theses elements are accumulated one by one to form a line. For each
+    line a ratio is computed from the available space given by the glues:
+  </p>
+  <ul>
+    <li>below -1.0 is too tight</li>
+    <li>between -1.0 and -0.5 is tight but acceptable</li>
+    <li>between -0.5 and 0.5 is normal, thus acceptable</li>
+    <li>between 0.5 and <code>maxRatio</code> is loose but acceptable</li>
+    <li>above <code>maxRatio</code> is not acceptable</li>
+  </ul>
+  <p>
+    For each line break a cost is computed, depending on the ratio and the
+    relative class of two lines. Every acceptable line breaks are kept and form
+    a graph of solutions. The minimum cost path is the best solution. The higher <code
+      >maxRatio</code
+    > is the more solutions will be investigated.
+  </p>
+
   <div class="buttons">
     Width: <input bind:value={lineWidth} />
     Max Ratio: <input bind:value={maxRatio} />
-    <button onclick={next}>Next</button>
+    <button onclick={next}>Next Piece</button>
+    <button onclick={terminate}>Terminate</button>
+    <button onclick={restart}>Restart</button>
   </div>
 
-  <div id="result-pane">
-    <canvas width="1000px" height="500px" bind:this={paragraphCanvasElement}
-    ></canvas>
-  </div>
-  <div id="result-pane">
-    <Graph {graph} />
+  <div class="side-by-side">
+    <div id="result-pane">
+      <canvas width="600px" height="500px" bind:this={paragraphCanvasElement}
+      ></canvas>
+    </div>
+    <div id="result-pane">
+      <Graph {graph} />
+    </div>
   </div>
 </div>
 
 <style>
+  .form-control {
+    margin-bottom: 10px;
+  }
   #result-pane {
     padding: 20px 0px;
   }
@@ -335,7 +410,7 @@ qu'un brutal a battu sa maîtresse.`;
     background-color: lightgray;
   }
   .elements {
-    margin-top: 10px;
+    margin: 20px 0;
     display: flex;
     flex-wrap: wrap;
     gap: 5px;
@@ -362,5 +437,9 @@ qu'un brutal a battu sa maîtresse.`;
     border: none;
     border-radius: 5px;
     padding: 5px 10px;
+  }
+  .side-by-side {
+    display: flex;
+    flex-wrap: nowrap;
   }
 </style>

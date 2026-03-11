@@ -20,7 +20,7 @@
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
-    "bootstrap": "^4.3.1",
+    "bootstrap": "^4.6.2",
     "lodash": "^4.17.23",
     "svelte-spa-router": "^4.0.1"
   }

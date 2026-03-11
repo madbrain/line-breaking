@@ -12,7 +12,7 @@
 </script>
 
 <NavBar name="Line Breaking" />
-<main class="container">
+<main class="container-xl">
   <div class="content">
     <Router {routes} />
   </div>
